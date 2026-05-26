@@ -6,6 +6,11 @@ Two specialist AI agents sharing the same long-term memory: a **wealth manager**
 
 ## Architecture
 
+![Financial OS Architecture](docs/architecture.svg)
+
+<details>
+<summary>Text version</summary>
+
 ```
 ┌──────────────────────────────────────────────────────────┐
 │                   Advisory Layer                          │
@@ -28,6 +33,8 @@ Two specialist AI agents sharing the same long-term memory: a **wealth manager**
 │   Yahoo Finance (S&P 500)                                │
 └──────────────────────────────────────────────────────────┘
 ```
+
+</details>
 
 **Data Layer.** Monarch Money MCP provides positions, cost basis, and balances across taxable brokerage, retirement accounts, direct-indexing accounts, crypto, banking, and credit cards. Aiwyn Tax MCP ingests historical tax transcripts and prior-year returns. Yahoo Finance for S&P 500 quotes and 52-week-high tracking. TreasuryDirect and private investments are manual entries in markdown because no API exists.
 
@@ -187,15 +194,15 @@ Both scripts print to stdout and email if the Resend env vars are set.
 
 1. **Monarch's `get_accounts.balance` is unreliable for any account that isn't a depository, credit, or feed-backed brokerage.** Crypto accounts return `null`. Manual "Other" accounts return `0` even when the UI shows a real value. The first net worth I computed from the feed was off by a large margin until I added reconciliation logic to fall back to `get_account_holdings` for crypto and to the markdown for manual accounts. The fix is documented as Rules R1-R3 in `/knowledge/mcp-integrations/rules.md`. Lesson: aggregators model the world they expect to see, and the long tail of how people actually hold money breaks that model in ways that look like the API working correctly.
 
-2. **Prompt caching mattered more than expected for this workload.** The context block is large (~four markdown files, several thousand tokens) and stable across runs. Without caching, every weekly briefing repays the cost of reading the same context. With `cache_control: { type: "ephemeral" }` on both the system prompt and the context block, the second invocation in a 5-minute window is dramatically cheaper and noticeably faster. *[Open question for me to verify with real numbers from my own runs: actual % cost reduction and latency delta. Filling in.]*
+2. **Prompt caching only mattered after the two-agent split.** I added `cache_control: { type: "ephemeral" }` to the system prompt and the context block thinking it would speed up weekly runs. It didn't. The ephemeral cache has a 5-minute TTL and weekly briefings always miss it, because consecutive runs are days apart. The real win came from running both scripts in sequence: the wealth manager warms the cache with the four context files, the CPA reads the same context within five minutes, and the second run's input tokens are billed at the cached rate (10% of base on Anthropic's pricing). If everything had stayed in one weekly script, I'd never have seen a cache hit. The caching infrastructure was right; the cadence wasn't.
 
 3. **Email beat chat as the primary surface, but I'm not sure why yet.** I started assuming this would be a chat interface. The weekly email turned out to be the format I actually engage with. Hypotheses I have not validated: (a) the email arrives without me asking, which removes the activation energy of opening a chat; (b) the structured format of the briefing is easier to skim than a conversation; (c) chat invites back-and-forth that I don't always want.
 
 4. **The mechanical-rules approach was the right constraint on AI advice, but it created a new problem: when nothing triggers, what does the system say?** The first version of the briefing tried to be helpful even when no rule fired, and the output drifted into generic commentary that I started ignoring. The current system prompt explicitly says "if nothing is triggered and no action is needed, say that briefly. Don't manufacture urgency." That single instruction made the briefings useful again. The takeaway, tentatively: rules are not just inputs to the AI; they are also a tool for telling the AI when to shut up.
 
-5. **The two-agent split was not the original plan.** I started with one advisor that did everything. It produced briefings that tried to cover positions, allocation, taxes, and options in a single document, and the tax sections were always shallow because the context window had to budget across all the topics. Splitting into a weekly wealth-manager run and an on-demand CPA run let each prompt go deeper on its own domain. The shared context layer was what made the split costless -- they're not duplicating memory, they're reading the same files. *[Filling in -- want to verify with cost/latency numbers from both scripts.]*
+5. **The two-agent split was not the original plan.** I started with one advisor that did everything. It produced briefings that tried to cover positions, allocation, taxes, and options in a single document, and the tax sections were always shallow because the output budget had to be split across all the topics. Splitting into a weekly wealth-manager run and an on-demand CPA run let each prompt go deeper on its own domain. The shared context layer was what made the split costless -- they're not duplicating memory, they're reading the same files. The unexpected benefit was that the prompts got cleaner too. The wealth-manager prompt doesn't need to know about IRS form numbers; the CPA prompt doesn't need to know about S&P drawdown rules. Specialization at the cadence level let me specialize at the prompt level, and the output from each agent became noticeably more confident.
 
-6. **Context freshness is the silent failure mode.** *[This one is mine to fill in -- I have the bones of an observation about how `DECISIONS.md` going stale degrades the system, but I want to write it honestly after I see it happen a few more times. Placeholder.]*
+6. **The system's biggest fragility is its dependence on me to keep `DECISIONS.md` current.** If I skip a few weeks of logging, the AI starts re-recommending things I've already decided against, because there's no record that I considered and rejected them. The same action item can show up in three consecutive briefings, each time correct given what the AI knows. The accidental mitigation: the weekly briefing itself is the forcing function. Reading the briefing prompts a "did I do anything last week I haven't logged?" check before I read the recommendations. Without that ritual, the system degrades quietly. The honest read: this only works because I'm both the user and the maintainer. A multi-tenant version of this would need a different mechanism for keeping the context fresh, and I haven't figured out what that would be.
 
 ## Why I built this
 
