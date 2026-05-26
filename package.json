@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "briefing": "tsx scripts/daily-briefing.ts"
+    "briefing": "tsx scripts/daily-briefing.ts",
+    "tax-audit": "tsx scripts/tax-audit.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",
