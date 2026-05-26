@@ -1,0 +1,30 @@
+node_modules/
+dist/
+.DS_Store
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Real context files (only .example.md versions are tracked)
+context/FINANCIAL_OVERVIEW.md
+context/GOALS_AND_RULES.md
+context/TAX_CONTEXT.md
+context/DECISIONS.md
+
+# Real decision records (private)
+decisions/*.md
+!decisions/.gitkeep
+
+# Local Claude Code config
+.claude/settings.local.json
+.claude/
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
