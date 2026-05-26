@@ -1,42 +1,60 @@
 # Financial OS
 
-A personal AI financial advisory layer that unifies accounts, enforces investment rules, and surfaces tax-optimized actions. It connects to brokerage data via MCP, maintains persistent context in structured markdown files, and uses the Anthropic API to generate weekly briefings that check mechanical investment rules against live market conditions. The system knows positions, cost basis, tax situation, and goals, so it produces specific advice with dollar amounts and tickers instead of generic guidance.
+Two specialist AI agents sharing the same long-term memory: a **wealth manager** that runs weekly against live brokerage positions, and a **CPA** that runs against tax documents and prior returns. Both read from the same markdown context files (goals, rules, tax situation, decision log) and write back to them. The wealth manager produces a weekly briefing with rule-driven actions and dollar amounts. The CPA ingests historical tax transcripts and surfaces unclaimed credits, amendment deadlines, and harvesting opportunities that the wealth manager then treats as deployable tax assets.
 
 > This repo is a public, redacted version of a private system I use weekly. The architecture, code structure, and sample outputs reflect the real system; personal account details, tax data, and positions have been anonymized.
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                   Advisory Layer                         │
-│        Anthropic API + weekly briefing script            │
-│   Checks rules, flags tax moves, recommends actions     │
-├─────────────────────────────────────────────────────────┤
-│                  Context Layer                           │
-│     Persistent markdown files (positions, goals,         │
-│     tax situation, decision history)                     │
-├─────────────────────────────────────────────────────────┤
-│                   Data Layer                             │
-│   Monarch Money MCP (Schwab, Wealthfront, Coinbase,     │
-│   BofA, credit cards) + Yahoo Finance (S&P 500)         │
-└─────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│                   Advisory Layer                          │
+│  ┌─────────────────────┐    ┌─────────────────────────┐  │
+│  │  Wealth Manager     │    │  CPA                    │  │
+│  │  Weekly briefing    │    │  Tax audit (on demand   │  │
+│  │  Rule triggers      │    │  + quarterly)           │  │
+│  │  Allocation drift   │    │  Credit recovery        │  │
+│  │  Options monitoring │    │  Loss harvesting        │  │
+│  └─────────────────────┘    └─────────────────────────┘  │
+├──────────────────────────────────────────────────────────┤
+│                  Context Layer (shared)                   │
+│   Persistent markdown: positions, goals, rules, tax       │
+│   situation, decision history                             │
+├──────────────────────────────────────────────────────────┤
+│                   Data Layer                              │
+│   Monarch Money MCP (Schwab, Wealthfront, Coinbase,      │
+│   BofA, credit cards)                                    │
+│   Aiwyn Tax MCP (transcripts, prior returns)             │
+│   Yahoo Finance (S&P 500)                                │
+└──────────────────────────────────────────────────────────┘
 ```
 
-**Data Layer.** Monarch Money MCP provides positions, cost basis, and balances across taxable brokerage, retirement accounts, direct-indexing accounts, crypto, banking, and credit cards. Yahoo Finance for S&P 500 quotes and 52-week-high tracking. TreasuryDirect and private investments are manual entries in markdown because no API exists.
+**Data Layer.** Monarch Money MCP provides positions, cost basis, and balances across taxable brokerage, retirement accounts, direct-indexing accounts, crypto, banking, and credit cards. Aiwyn Tax MCP ingests historical tax transcripts and prior-year returns. Yahoo Finance for S&P 500 quotes and 52-week-high tracking. TreasuryDirect and private investments are manual entries in markdown because no API exists.
 
-**Context Layer.** Four markdown files encode everything the AI needs beyond the numbers. The structure is documented in the example files under `/context/`:
+**Context Layer.** Four markdown files encode everything both agents need beyond the numbers. Both agents read from these; both write back to `DECISIONS.md`:
 
 - `FINANCIAL_OVERVIEW.md` -- portfolio snapshot, positions, cost basis, allocation vs. targets, options positions, tax assets, data-source status
-- `GOALS_AND_RULES.md` -- target allocation by asset class, investment philosophy, behavioral patterns, and the 10 mechanical pre-committed rules
+- `GOALS_AND_RULES.md` -- target allocation, investment philosophy, behavioral patterns, the 10 mechanical pre-committed rules
 - `TAX_CONTEXT.md` -- filing history, carryforwards, AMT credits, Roth conversion math, state tax planning
-- `DECISIONS.md` -- running journal of buy/sell decisions, reasoning, what the system recommended, outcomes
+- `DECISIONS.md` -- running journal of buy/sell decisions and tax moves, reasoning, what each agent recommended, outcomes
 
-**Advisory Layer.** A TypeScript script (`scripts/daily-briefing.ts`) reads all four context files, fetches live S&P 500 data, calls Claude via the Anthropic API with prompt caching on both the system prompt and the context block, and returns a structured weekly briefing. Output is emailed via Resend.
+**Advisory Layer.** Two TypeScript scripts share the same context-loading and prompt-caching plumbing:
+
+- `scripts/daily-briefing.ts` -- the wealth manager. Reads all four context files, fetches live S&P 500 data, calls Claude with prompt caching, returns a structured weekly briefing with rule-driven actions.
+- `scripts/tax-audit.ts` -- the CPA. Cross-references tax transcripts and `TAX_CONTEXT.md` against current positions and carryforwards. Surfaces unclaimed credits, statute-of-limitations deadlines, gain/loss pairing opportunities, and wash-sale risk across accounts. Output feeds back into the context layer as tax assets the wealth manager can deploy.
+
+## What it caught
+
+The CPA agent's first concrete result on the real system: it surfaced tens of thousands of dollars in unclaimed AMT credit from an old ISO exercise. The credit had been generated several years prior, then dropped when I switched CPAs between filings. Five subsequent returns missed it. Ingesting historical tax transcripts through Claude with the Aiwyn Tax connector caught it in one session and identified the three-year statute-of-limitations deadline for filing amended returns to recover it.
+
+That outcome is the project's existence proof. The same context architecture that drives weekly portfolio actions also surfaces tax errors that two CPAs and a robo-advisor missed.
 
 ## What's built
 
 - Monarch MCP integration providing live positions and cost basis across all connected accounts
-- Weekly briefing via `npm run briefing` that generates analysis and emails it
+- Aiwyn Tax MCP integration for ingesting historical transcripts and prior-year returns
+- Weekly briefing via `npm run briefing` -- generates the wealth-manager analysis and emails it
+- Tax audit via `npm run tax-audit` -- generates the CPA analysis on demand
 - S&P 500 drawdown tracking against 52-week high for the mechanical rule triggers
 - Full allocation calculation across all accounts with drift detection
 - Tax opportunity flagging (unrealized losses, Roth conversion window, gain/loss pairing)
@@ -47,14 +65,15 @@ A personal AI financial advisory layer that unifies accounts, enforces investmen
 
 - Any UI. Interface is the emailed briefing, or chatting with a Claude Project that has the markdown files loaded
 - Direct broker MCP (community Schwab MCP exists but isn't connected here) -- would unlock lot-level cost basis for true tax-loss harvesting
-- Event-triggered alerts (currently only weekly cadence). Should fire on 3%+ down days and T-bill maturities, not just on schedule
+- Event-triggered alerts (currently only weekly cadence on the wealth manager, manual trigger on the CPA). Should fire on 3%+ down days, T-bill maturities, and approaching statute-of-limitations deadlines
 - Investment literature RAG (Bogle, Bernstein, Swensen, Malkiel)
 - Coinbase MCP and direct Wealthfront automation
+- Automated amendment-return drafting -- the CPA agent currently identifies opportunities but doesn't draft 1040-X forms
 - Multi-user anything
 
 ## Sample output
 
-What the system produces, generated against the example context files in `/context/`. Full version in [SAMPLE_BRIEFING.md](./SAMPLE_BRIEFING.md).
+What the wealth-manager agent produces, generated against the example context files in `/context/`. Full version in [SAMPLE_BRIEFING.md](./SAMPLE_BRIEFING.md). A sample CPA output lives alongside it in [SAMPLE_TAX_AUDIT.md](./SAMPLE_TAX_AUDIT.md).
 
 ````markdown
 # Weekly Financial Briefing -- Sunday, April 26, 2026
@@ -90,7 +109,8 @@ month of US outperformance and this trips the 5-percentage-point threshold.
 1. Deploy $30K into VXUS. Funded by the $10K T-bill maturity on 5/8 and
    $20K from the money market. Satisfies Rule #3, Rule #4, and closes the
    international gap before Rule #5 fires.
-2. Email the CPA about AMT credit recovery (~$20K unclaimed, statute approaching).
+2. Email the CPA agent's flagged AMT credit recovery (~$20K unclaimed,
+   statute approaching).
 3. Hold options through expiration unless ORBT moves materially.
 
 Nothing else needs action this week.
@@ -98,19 +118,34 @@ Nothing else needs action this week.
 
 ## Key design decisions
 
+**Two agents, one memory.** The wealth manager and the CPA are not separate systems with their own databases. They share the four markdown files in `/context/`. The CPA writes "AMT credit recovery available, statute approaching" into `TAX_CONTEXT.md`; the wealth manager reads it the next week and treats it as a deployable tax asset. The compounding value is in the shared context, not in either agent individually.
+
 **Markdown as the source of truth, not a database.** Context files are human-readable, diff-able, AI-readable. No schema migrations. The user owns their data because it lives in a folder, not a SaaS account. Every other architectural choice flows from this one.
 
 **Mechanical rules over discretion.** The behavioral failure mode this is built to fight is freezing during drawdowns. The system's job is to remove the decision surface: "Rule #1 says deploy $65K. Want to execute?" -- not to re-debate whether the rule is right. The rules live in `GOALS_AND_RULES.md`, are referenced by number, and the briefing reports each one's trigger status individually.
 
-**Specificity over hedging.** The system prompt bans "consider" and "you might want to." If a rule triggers, the AI states the rule number and the action with a dollar amount. If nothing triggers, it says so briefly. The prompt also bans em-dashes and softening words.
+**Specificity over hedging.** The system prompts ban "consider" and "you might want to." If a rule triggers, the agent states the rule number and the action with a dollar amount. If nothing triggers, it says so briefly. The prompts also ban em-dashes and softening words.
 
 **Personal first.** This is built because I needed it, not because it has a market. Whether it generalizes is a question for after it has been useful for six months.
+
+## Cost comparison
+
+For a portfolio in the $1-5M range with cross-account tax complexity, the alternative spend looks like:
+
+| Service | Annual cost | What you get |
+|---|---|---|
+| CPA (full-service, ad hoc) | $1,500-3,000 | Tax filing + light planning. No proactive surfacing of historical errors. |
+| Fee-only financial advisor (e.g. Range) | $3,000-10,000 | Cross-account planning. Advice filtered through their methodology. |
+| This system | ~$5/month in API costs | Direct access to the reasoning engine. User owns the context. |
+
+The point is not that this replaces a human CPA. It is that the marginal cost of a second opinion that has read every position and every prior return is approximately zero -- and that opinion caught a five-figure error two paid CPAs had missed across five filings.
 
 ## Tech stack
 
 - TypeScript / Node, run via `tsx`
 - Anthropic SDK (`@anthropic-ai/sdk`), Claude Sonnet with prompt caching on both the system prompt and the context block
 - Monarch Money MCP (community Python server by `robcerda`, registered in `~/.claude.json`)
+- Aiwyn Tax MCP for tax-document ingestion and analysis
 - Yahoo Finance public chart endpoint for S&P 500
 - Resend for email
 - No hosting. Runs locally on a cron or manually.
@@ -133,17 +168,18 @@ cp .env.example .env
 # Copy the .example.md files in /context/ and remove the .example suffix.
 # Replace the placeholder content with your own portfolio data, goals, and rules.
 
-# 4. Set up the Monarch Money MCP server
-# Follow the setup notes in /knowledge/mcp-integrations/knowledge.md.
-# Required if you want positions and balances populated automatically; not
-# strictly required to run the briefing (you can maintain everything by hand
-# in the markdown files).
+# 4. Set up the MCP servers
+# Monarch: follow the setup notes in /knowledge/mcp-integrations/knowledge.md.
+# Aiwyn Tax: configure per the MCP's documentation; required only for the tax-audit script.
 
-# 5. Run the briefing
+# 5. Run the wealth manager (weekly briefing)
 npm run briefing
+
+# 6. Run the CPA (on-demand tax audit)
+npm run tax-audit
 ```
 
-The script prints the briefing to stdout and emails it if the Resend env vars are set.
+Both scripts print to stdout and email if the Resend env vars are set.
 
 ## What I learned
 
@@ -157,8 +193,10 @@ The script prints the briefing to stdout and emails it if the Resend env vars ar
 
 4. **The mechanical-rules approach was the right constraint on AI advice, but it created a new problem: when nothing triggers, what does the system say?** The first version of the briefing tried to be helpful even when no rule fired, and the output drifted into generic commentary that I started ignoring. The current system prompt explicitly says "if nothing is triggered and no action is needed, say that briefly. Don't manufacture urgency." That single instruction made the briefings useful again. The takeaway, tentatively: rules are not just inputs to the AI; they are also a tool for telling the AI when to shut up.
 
-5. **Context freshness is the silent failure mode.** *[This one is mine to fill in -- I have the bones of an observation about how `DECISIONS.md` going stale degrades the system, but I want to write it honestly after I see it happen a few more times. Placeholder.]*
+5. **The two-agent split was not the original plan.** I started with one advisor that did everything. It produced briefings that tried to cover positions, allocation, taxes, and options in a single document, and the tax sections were always shallow because the context window had to budget across all the topics. Splitting into a weekly wealth-manager run and an on-demand CPA run let each prompt go deeper on its own domain. The shared context layer was what made the split costless -- they're not duplicating memory, they're reading the same files. *[Filling in -- want to verify with cost/latency numbers from both scripts.]*
+
+6. **Context freshness is the silent failure mode.** *[This one is mine to fill in -- I have the bones of an observation about how `DECISIONS.md` going stale degrades the system, but I want to write it honestly after I see it happen a few more times. Placeholder.]*
 
 ## Why I built this
 
-Built for myself because I had money scattered across six platforms and no unified view or advisory layer. Sharing publicly as a portfolio artifact. Not actively maintained as a product. If the architecture is useful to you, fork it. If you want to talk about the design choices, the issues tab is open.
+Built for myself because I had money scattered across six platforms, two CPAs who had missed a five-figure tax error, and no unified view or advisory layer. Sharing publicly as a portfolio artifact. Not actively maintained as a product. If the architecture is useful to you, fork it. If you want to talk about the design choices, the issues tab is open.
